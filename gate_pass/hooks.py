@@ -5,9 +5,38 @@ app_description = "App for Gate pass and short leave"
 app_email = "Faizanahmed1295@gmail.com"
 app_license = "mit"
 
+
 # Apps
 # ------------------
 
+
+
+# Option 1: If your app name is different
+# doc_events = {
+#     "Gate Pass": {
+#         "validate": "gate_pass.gate_pass.gate_pass_deduction.calculate_total_hours"
+#     }
+# }
+doc_events = {
+    "Gate Pass": {
+        "validate": "gate_pass.gate_pass.gate_pass_deduction.calculate_total_hours",
+        "on_submit": "gate_pass.gate_pass.gate_pass_deduction.on_submit"
+    }
+}
+
+# # Option 2: Try without the first gate_pass
+# doc_events = {
+#     "Gate Pass": {
+#         "validate": "gate_pass_deduction.calculate_total_hours"
+#     }
+# }
+
+# # Option 3: Try with full path from apps
+# doc_events = {
+#     "Gate Pass": {
+#         "validate": "gate_pass.gate_pass.gate_pass_deduction.calculate_total_hours"
+#     }
+# }
 # required_apps = []
 
 # Each item in the list will be shown as an app in the apps page
