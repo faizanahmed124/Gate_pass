@@ -1,0 +1,180 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-04-13 12:19:19.272990",
+ "custom": 1,
+ "default_print_format": "Visitor Print",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "meeting_details_section",
+  "person_to_meet",
+  "person_name",
+  "column_break_lbxj",
+  "department",
+  "purpose_of_visit",
+  "section_break_qvpa",
+  "visitor_information",
+  "visit_details_section",
+  "visit_date",
+  "in_time",
+  "column_break_knxd",
+  "visit_status",
+  "out_time",
+  "security__approval_section",
+  "approved_by",
+  "column_break_soss",
+  "remarks",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "Visiter-."
+  },
+  {
+   "fieldname": "meeting_details_section",
+   "fieldtype": "Section Break",
+   "label": "Company Employee Details"
+  },
+  {
+   "fieldname": "person_to_meet",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Person to Meet",
+   "options": "Employee"
+  },
+  {
+   "fetch_from": "person_to_meet.employee_name",
+   "fieldname": "person_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Person Name"
+  },
+  {
+   "fieldname": "column_break_lbxj",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "person_to_meet.department",
+   "fieldname": "department",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Department"
+  },
+  {
+   "fieldname": "purpose_of_visit",
+   "fieldtype": "Data",
+   "label": "Purpose of Visit"
+  },
+  {
+   "fieldname": "section_break_qvpa",
+   "fieldtype": "Section Break",
+   "label": "Visitor Information"
+  },
+  {
+   "fieldname": "visitor_information",
+   "fieldtype": "Table",
+   "label": "Visitor Information",
+   "options": "Visitor Information"
+  },
+  {
+   "fieldname": "visit_details_section",
+   "fieldtype": "Section Break",
+   "label": "Visit Details"
+  },
+  {
+   "default": "Today",
+   "fieldname": "visit_date",
+   "fieldtype": "Date",
+   "label": "Visit Date"
+  },
+  {
+   "default": "Now",
+   "fieldname": "in_time",
+   "fieldtype": "Time",
+   "label": "In Time",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "column_break_knxd",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "visit_status",
+   "fieldtype": "Select",
+   "label": "Visit Status",
+   "options": "In\nOut\nPending"
+  },
+  {
+   "fieldname": "out_time",
+   "fieldtype": "Time",
+   "label": "Out Time"
+  },
+  {
+   "fieldname": "security__approval_section",
+   "fieldtype": "Section Break",
+   "label": "Security / Approval"
+  },
+  {
+   "fieldname": "approved_by",
+   "fieldtype": "Link",
+   "label": "Approved By",
+   "options": "User"
+  },
+  {
+   "fieldname": "column_break_soss",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Data",
+   "label": "Remarks"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Visitor",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-04-20 16:43:33.662642",
+ "modified_by": "devteam@atssynthetic.com.pk",
+ "module": "Gate Pass",
+ "name": "Visitor",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "devteam@atssynthetic.com.pk",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
