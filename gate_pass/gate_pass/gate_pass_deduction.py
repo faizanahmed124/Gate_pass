@@ -1,6 +1,54 @@
 import frappe
-from frappe.utils import get_datetime, add_days, time_diff_in_seconds
+from frappe.utils import flt, formatdate, get_first_day, get_last_day, get_datetime, add_days, time_diff_in_seconds
 from frappe import _
+
+
+DEDUCTION_FIELDS = [
+    "deduct_from_salary",
+    "deduct_from_overtime",
+    "deduct_from_duty_hours",
+]
+
+
+def validate_single_deduction(doc):
+    """Only one 'Deduct From' option may be selected at a time."""
+    selected = [
+        _(doc.meta.get_label(f)).strip() for f in DEDUCTION_FIELDS if doc.get(f)
+    ]
+    if len(selected) > 1:
+        frappe.throw(
+            _("Only one deduction option can be selected at a time. Selected: {0}").format(
+                ", ".join(selected)
+            ),
+            title=_("Multiple Deductions Selected"),
+        )
+
+
+WORKING_DAYS_PER_MONTH = 30
+WORKING_HOURS_PER_DAY = 8
+
+
+def get_hourly_rate(employee):
+    """Employee CTC (gross pay) / 30 days / 8 hours."""
+    ctc = frappe.db.get_value("Employee", employee, "ctc")
+    return flt(ctc) / WORKING_DAYS_PER_MONTH / WORKING_HOURS_PER_DAY
+
+
+def calculate_deduction_amount(doc, total_minutes):
+    """Amount for the gate pass period; only when deducting from salary."""
+    if not (doc.get("deduct_from_salary") and doc.get("employee") and total_minutes):
+        return 0
+
+    rate = get_hourly_rate(doc.employee)
+    if not rate:
+        frappe.msgprint(
+            _("CTC is not set for {0}; deduction amount is 0").format(
+                doc.employee
+            ),
+            indicator="orange",
+            alert=True,
+        )
+    return flt(rate * total_minutes / 60, 0)
 
 
 def calculate_total_hours(doc, method=None):
@@ -9,6 +57,8 @@ def calculate_total_hours(doc, method=None):
     Calculates total_hours
     Also ensures allowed_hours never shows negative in Gate Pass
     """
+
+    validate_single_deduction(doc)
 
     # ==============================
     # CALCULATE TOTAL HOURS
@@ -32,6 +82,9 @@ def calculate_total_hours(doc, method=None):
         hrs = total_minutes // 60
         mins = total_minutes % 60
 
+        doc.calculate_total_hours = round(total_minutes / 60, 3)
+        doc.deduction_amount = calculate_deduction_amount(doc, total_minutes)
+
         if hrs > 0:
             doc.total_hours = f"{hrs} hr {mins} min" if mins else f"{hrs} hr"
         else:
@@ -39,6 +92,8 @@ def calculate_total_hours(doc, method=None):
 
     else:
         doc.total_hours = ""
+        doc.calculate_total_hours = 0
+        doc.deduction_amount = 0
 
     # ==========================================
     # ALWAYS FETCH ALLOWED HOURS (NO NEGATIVE)
@@ -55,6 +110,78 @@ def calculate_total_hours(doc, method=None):
 
         # 🚫 Never show negative in Gate Pass
         doc.allowed_hours = employee_allowed if employee_allowed > 0 else 0
+
+
+SALARY_COMPONENT = "Deduction-Gate Pass"
+
+
+def sync_additional_salary(doc, method=None):
+    """Keep ONE Additional Salary per employee per month for all gate passes.
+
+    HRMS adds one salary slip row per Additional Salary, so the month's
+    submitted gate pass amounts are summed into a single Additional Salary
+    (payroll date = month end), recreated whenever a gate pass is submitted
+    or cancelled.
+    """
+    if not (doc.get("employee") and doc.get("date")):
+        return
+
+    month_start, month_end = get_first_day(doc.date), get_last_day(doc.date)
+
+    total = flt(
+        frappe.db.sql(
+            """
+            select sum(deduction_amount) from `tabGate Pass`
+            where employee = %s and docstatus = 1 and deduct_from_salary = 1
+                and date between %s and %s
+            """,
+            (doc.employee, month_start, month_end),
+        )[0][0]
+    )
+
+    existing = frappe.get_all(
+        "Additional Salary",
+        filters={
+            "employee": doc.employee,
+            "salary_component": SALARY_COMPONENT,
+            "docstatus": 1,
+            "payroll_date": ["between", [month_start, month_end]],
+        },
+        fields=["name", "amount", "payroll_date"],
+    )
+
+    if total > 0 and len(existing) == 1 and (
+        flt(existing[0].amount) == total and existing[0].payroll_date == month_end
+    ):
+        return
+
+    for row in existing:
+        frappe.get_doc("Additional Salary", row.name).cancel()
+
+    if total <= 0:
+        return
+
+    additional_salary = frappe.get_doc(
+        {
+            "doctype": "Additional Salary",
+            "employee": doc.employee,
+            "company": frappe.db.get_value("Employee", doc.employee, "company"),
+            "salary_component": SALARY_COMPONENT,
+            "amount": total,
+            "payroll_date": month_end,
+            "overwrite_salary_structure_amount": 0,
+        }
+    )
+    additional_salary.insert()
+    additional_salary.submit()
+
+    frappe.msgprint(
+        _("Additional Salary {0}: {1} gate pass deduction for {2}").format(
+            additional_salary.name, total, formatdate(month_end, "MMM yyyy")
+        ),
+        indicator="green",
+        alert=True,
+    )
 
 
 def on_submit(doc, method=None):

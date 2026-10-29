@@ -20,7 +20,11 @@ app_license = "mit"
 doc_events = {
     "Gate Pass": {
         "validate": "gate_pass.gate_pass.gate_pass_deduction.calculate_total_hours",
-        "on_submit": "gate_pass.gate_pass.gate_pass_deduction.on_submit"
+        "on_submit": [
+            "gate_pass.gate_pass.gate_pass_deduction.on_submit",
+            "gate_pass.gate_pass.gate_pass_deduction.sync_additional_salary",
+        ],
+        "on_cancel": "gate_pass.gate_pass.gate_pass_deduction.sync_additional_salary",
     }
 }
 
@@ -72,7 +76,7 @@ doc_events = {
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
+doctype_js = {"Gate Pass": "public/js/gate_pass.js"}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
