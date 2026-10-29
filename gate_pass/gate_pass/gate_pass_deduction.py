@@ -83,7 +83,7 @@ def calculate_total_hours(doc, method=None):
         mins = total_minutes % 60
 
         doc.calculate_total_hours = round(total_minutes / 60, 3)
-        doc.deduction_amount = calculate_deduction_amount(doc, total_minutes)
+        doc.deducted_amount = calculate_deduction_amount(doc, total_minutes)
 
         if hrs > 0:
             doc.total_hours = f"{hrs} hr {mins} min" if mins else f"{hrs} hr"
@@ -93,7 +93,7 @@ def calculate_total_hours(doc, method=None):
     else:
         doc.total_hours = ""
         doc.calculate_total_hours = 0
-        doc.deduction_amount = 0
+        doc.deducted_amount = 0
 
     # ==========================================
     # ALWAYS FETCH ALLOWED HOURS (NO NEGATIVE)
@@ -131,7 +131,7 @@ def sync_additional_salary(doc, method=None):
     total = flt(
         frappe.db.sql(
             """
-            select sum(deduction_amount) from `tabGate Pass`
+            select sum(cast(nullif(deducted_amount, '') as decimal(18, 2))) from `tabGate Pass`
             where employee = %s and docstatus = 1 and deduct_from_salary = 1
                 and date between %s and %s
             """,
