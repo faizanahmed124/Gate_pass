@@ -24,14 +24,15 @@ def validate_single_deduction(doc):
         )
 
 
-WORKING_DAYS_PER_MONTH = 30
 WORKING_HOURS_PER_DAY = 8
+DEDUCTION_MULTIPLIER = 1.25
 
 
-def get_hourly_rate(employee):
-    """Employee CTC (gross pay) / 30 days / 8 hours."""
+def get_hourly_rate(employee, on_date):
+    """Employee CTC / days in the month of the gate pass (30 or 31) / 8 hours x 1.25."""
     ctc = frappe.db.get_value("Employee", employee, "ctc")
-    return flt(ctc) / WORKING_DAYS_PER_MONTH / WORKING_HOURS_PER_DAY
+    days_in_month = get_last_day(on_date).day
+    return flt(ctc) / days_in_month / WORKING_HOURS_PER_DAY * DEDUCTION_MULTIPLIER
 
 
 def calculate_deduction_amount(doc, total_minutes):
@@ -39,7 +40,7 @@ def calculate_deduction_amount(doc, total_minutes):
     if not (doc.get("deduct_from_salary") and doc.get("employee") and total_minutes):
         return 0
 
-    rate = get_hourly_rate(doc.employee)
+    rate = get_hourly_rate(doc.employee, doc.date)
     if not rate:
         frappe.msgprint(
             _("CTC is not set for {0}; deduction amount is 0").format(
