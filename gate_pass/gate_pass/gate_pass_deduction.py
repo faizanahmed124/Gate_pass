@@ -28,11 +28,22 @@ WORKING_HOURS_PER_DAY = 8
 DEDUCTION_MULTIPLIER = 1.25
 
 
-def get_hourly_rate(employee, on_date):
-    """Employee CTC / days in the month of the gate pass (30 or 31) / 8 hours x 1.25."""
+def get_hourly_rate(employee, on_date, multiplier=DEDUCTION_MULTIPLIER):
+    """Employee CTC / days in the month of the gate pass (28-31) / 8 hours x multiplier."""
     ctc = frappe.db.get_value("Employee", employee, "ctc")
     days_in_month = get_last_day(on_date).day
-    return flt(ctc) / days_in_month / WORKING_HOURS_PER_DAY * DEDUCTION_MULTIPLIER
+    return flt(ctc) / days_in_month / WORKING_HOURS_PER_DAY * multiplier
+
+
+def get_total_minutes(doc):
+    """Minutes between From Time and To Time (to-time past midnight rolls to next day)."""
+    if not (doc.get("hours") and doc.get("to_time") and doc.get("date")):
+        return 0
+    from_dt = get_datetime(f"{doc.date} {doc.hours}")
+    to_dt = get_datetime(f"{doc.date} {doc.to_time}")
+    if to_dt < from_dt:
+        to_dt = add_days(to_dt, 1)
+    return int(time_diff_in_seconds(to_dt, from_dt) / 60)
 
 
 def calculate_deduction_amount(doc, total_minutes):
@@ -40,7 +51,9 @@ def calculate_deduction_amount(doc, total_minutes):
     if not (doc.get("deduct_from_salary") and doc.get("employee") and total_minutes):
         return 0
 
-    rate = get_hourly_rate(doc.employee, doc.date)
+    # Returnable Gate Pass: plain CTC / days / 8 / 60 x minutes (no 1.25 multiplier)
+    multiplier = 1 if doc.get("gate_pass_type") == "Returnable Gate Pass" else DEDUCTION_MULTIPLIER
+    rate = get_hourly_rate(doc.employee, doc.date, multiplier)
     if not rate:
         frappe.msgprint(
             _("CTC is not set for {0}; deduction amount is 0").format(
