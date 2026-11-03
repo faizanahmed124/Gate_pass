@@ -141,6 +141,21 @@ def calculate_total_hours(doc, method=None):
 SALARY_COMPONENT = "Deduction-Gate Pass"
 
 
+def ensure_salary_component():
+    """The Additional Salary needs a Deduction type component; without it the type stays empty
+    and HRMS silently skips the row on the salary slip. Create it if it is missing."""
+    if frappe.db.exists("Salary Component", SALARY_COMPONENT):
+        return
+    frappe.get_doc(
+        {
+            "doctype": "Salary Component",
+            "salary_component": SALARY_COMPONENT,
+            "salary_component_abbr": "D-GP",
+            "type": "Deduction",
+        }
+    ).insert(ignore_permissions=True)
+
+
 def sync_additional_salary(doc, method=None):
     """Keep ONE Additional Salary per employee per month for all gate passes.
 
@@ -187,9 +202,11 @@ def sync_additional_salary(doc, method=None):
     if total <= 0:
         return
 
+    ensure_salary_component()
     additional_salary = frappe.get_doc(
         {
             "doctype": "Additional Salary",
+            "type": "Deduction",
             "employee": doc.employee,
             "company": frappe.db.get_value("Employee", doc.employee, "company"),
             "salary_component": SALARY_COMPONENT,

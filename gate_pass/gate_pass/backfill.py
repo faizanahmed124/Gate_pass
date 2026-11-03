@@ -59,3 +59,32 @@ def run(from_date="2026-10-01", to_date="2026-10-31", dry_run=1):
 
     if not dry_run:
         frappe.db.commit()
+
+
+def fix_component(dry_run=1):
+    """One-off: make sure the 'Deduction-Gate Pass' component exists (type Deduction) and give the
+    already created gate pass Additional Salaries their missing type, so HRMS puts them on the slip.
+
+        bench --site <site> execute gate_pass.gate_pass.backfill.fix_component --kwargs "{'dry_run': 1}"
+    """
+    from gate_pass.gate_pass.gate_pass_deduction import SALARY_COMPONENT, ensure_salary_component
+
+    dry_run = cint(dry_run)
+    print("Component exists:", bool(frappe.db.exists("Salary Component", SALARY_COMPONENT)))
+    broken = frappe.db.sql(
+        """select count(*) from `tabAdditional Salary`
+        where salary_component = %s and docstatus = 1 and (type is null or type = '')""",
+        SALARY_COMPONENT,
+    )[0][0]
+    print("Submitted Additional Salaries with empty type:", broken)
+    if dry_run:
+        print("DRY RUN: nothing changed")
+        return
+    ensure_salary_component()
+    frappe.db.sql(
+        """update `tabAdditional Salary` set type = 'Deduction'
+        where salary_component = %s and (type is null or type = '')""",
+        SALARY_COMPONENT,
+    )
+    frappe.db.commit()
+    print("done: component ensured and", broken, "Additional Salaries set to Deduction")
