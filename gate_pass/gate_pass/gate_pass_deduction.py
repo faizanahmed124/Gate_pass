@@ -138,7 +138,8 @@ def calculate_total_hours(doc, method=None):
         doc.allowed_hours = employee_allowed if employee_allowed > 0 else 0
 
 
-SALARY_COMPONENT = "Deduction-Gate Pass"
+SALARY_COMPONENT = "G.P"   # existing Deduction component (abbr D-GP) used for gate pass deductions
+LEGACY_COMPONENT = "Deduction-Gate Pass"
 
 
 def ensure_salary_component():

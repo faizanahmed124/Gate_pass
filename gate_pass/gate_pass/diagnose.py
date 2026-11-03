@@ -1,11 +1,11 @@
-"""Read-only: why is an employee's 'Deduction-Gate Pass' Additional Salary not on the salary slip?
+"""Read-only: why is an employee's 'G.P' Additional Salary not on the salary slip?
 
     bench --site <site> execute gate_pass.gate_pass.diagnose.run --kwargs "{'employee': '1198'}"
 """
 
 import frappe
 
-COMPONENT = "Deduction-Gate Pass"
+from gate_pass.gate_pass.gate_pass_deduction import SALARY_COMPONENT as COMPONENT
 
 
 def run(employee):
