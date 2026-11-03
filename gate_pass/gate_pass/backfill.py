@@ -61,6 +61,41 @@ def run(from_date="2026-10-01", to_date="2026-10-31", dry_run=1):
         frappe.db.commit()
 
 
+def _stale_rows():
+    """Deduction rows of DRAFT slips still carrying the old component name. HRMS would keep them
+    and add a second G.P row (double deduction), so they are renamed to G.P before recalculating."""
+    from gate_pass.gate_pass.gate_pass_deduction import LEGACY_COMPONENT
+
+    return frappe.db.sql_list(
+        """select sd.name from `tabSalary Detail` sd join `tabSalary Slip` ss on ss.name = sd.parent
+        where ss.docstatus = 0 and sd.parentfield = 'deductions' and sd.salary_component = %s""",
+        LEGACY_COMPONENT,
+    )
+
+
+def _rename_stale_rows():
+    from gate_pass.gate_pass.gate_pass_deduction import LEGACY_COMPONENT, SALARY_COMPONENT
+
+    comp = frappe.db.get_value(
+        "Salary Component", SALARY_COMPONENT,
+        ["salary_component_abbr", "depends_on_payment_days", "do_not_include_in_total"], as_dict=True,
+    ) or {}
+    rows = _stale_rows()
+    for name in rows:
+        # take the row's flags from the real component too, so the amount is not prorated by payment days
+        frappe.db.set_value(
+            "Salary Detail", name,
+            {
+                "salary_component": SALARY_COMPONENT,
+                "abbr": comp.get("salary_component_abbr"),
+                "depends_on_payment_days": comp.get("depends_on_payment_days") or 0,
+                "do_not_include_in_total": comp.get("do_not_include_in_total") or 0,
+            },
+            update_modified=False,
+        )
+    return len(rows)
+
+
 def fix_component(dry_run=1):
     """One-off: gate pass Additional Salaries were created under the component name
     'Deduction-Gate Pass' (which does not exist on the live site) with an empty type, so HRMS
@@ -81,6 +116,7 @@ def fix_component(dry_run=1):
         SALARY_COMPONENT,
     )[0][0]
     print(f"Additional Salaries under '{LEGACY_COMPONENT}': {old} | under '{SALARY_COMPONENT}' with empty type: {empty}")
+    print(f"Draft slip rows still named '{LEGACY_COMPONENT}': {len(_stale_rows())}")
     if dry_run:
         print("DRY RUN: nothing changed")
         return
@@ -94,8 +130,9 @@ def fix_component(dry_run=1):
         where salary_component = %s and (type is null or type = '')""",
         SALARY_COMPONENT,
     )
+    renamed = _rename_stale_rows()
     frappe.db.commit()
-    print("done")
+    print(f"done ({renamed} draft slip rows renamed to {SALARY_COMPONENT})")
 
 
 def refresh_draft_slips(from_date, to_date, dry_run=1):
@@ -123,8 +160,11 @@ def refresh_draft_slips(from_date, to_date, dry_run=1):
         pluck="name",
     )
     print(f"{'DRY RUN' if dry_run else 'LIVE RUN'}: {len(employees)} employees with a gate pass deduction, {len(slips)} draft slips in {from_date}..{to_date}")
+    print(f"Draft slip rows still named with the old component name: {len(_stale_rows())}")
     if dry_run:
         return
+    _rename_stale_rows()
+    frappe.db.commit()
     for employee in employees:
         auto_recalculate_draft_slips(employee, from_date, to_date)
     print("done")
