@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import flt, formatdate, get_first_day, get_last_day, get_datetime, add_days, time_diff_in_seconds
+from frappe.utils import add_months, flt, getdate, formatdate, get_first_day, get_last_day, get_datetime, add_days, time_diff_in_seconds
 from frappe import _
 
 
@@ -56,6 +56,19 @@ def get_total_minutes(doc):
     if to_dt < from_dt:
         to_dt = add_days(to_dt, 1)
     return int(time_diff_in_seconds(to_dt, from_dt) / 60)
+
+
+def get_decimal_hours(doc):
+    """Gate pass length in hours (hrs + mins / 60, 2 decimals) - the same figure on_submit deducts."""
+    minutes = get_total_minutes(doc)
+    return round(minutes // 60 + (minutes % 60) / 60, 2)
+
+
+def deducts_allowed_hours(doc, employee):
+    """True when this gate pass is taken off the employee's Allow Hours For Leave:
+    no "Deduct From" option ticked, Permanent employee with more than 3 months of service."""
+    no_option_ticked = not any(doc.get(f) for f in DEDUCTION_FIELDS)
+    return no_option_ticked and has_allowed_hours(employee, doc.get("date"))
 
 
 def calculate_deduction_amount(doc, total_minutes):
@@ -136,6 +149,15 @@ def calculate_total_hours(doc, method=None):
 
         # 🚫 Never show negative in Gate Pass
         doc.allowed_hours = employee_allowed if employee_allowed > 0 else 0
+
+        # Remaining allowed hours after this gate pass (shown below Allowed Hours; it may go
+        # negative on purpose, like the "Changing hours into minus" warning on submit)
+        if doc.meta.has_field("remaining_hours"):
+            employee = frappe.db.get_value(
+                "Employee", doc.employee, ["employment_type", "date_of_joining"], as_dict=True
+            ) or {}
+            taken = get_decimal_hours(doc) if deducts_allowed_hours(doc, employee) else 0
+            doc.remaining_hours = round(employee_allowed - taken, 2)
 
 
 SALARY_COMPONENT = "G.P"   # existing Deduction component (abbr D-GP) used for gate pass deductions
@@ -228,6 +250,14 @@ def sync_additional_salary(doc, method=None):
     )
 
 
+def has_allowed_hours(employee, on_date):
+    """Permanent employee with more than 3 months of service on the given date."""
+    joining = employee.get("date_of_joining")
+    if (employee.get("employment_type") or "").strip().lower() != "permanent" or not joining:
+        return False
+    return getdate(on_date) > add_months(getdate(joining), 3)
+
+
 def on_submit(doc, method=None):
     """
     Runs on Submit
@@ -271,16 +301,19 @@ def on_submit(doc, method=None):
         employee = frappe.get_doc("Employee", doc.employee)
         employee_branch = employee.get("branch") or ""
 
-        leave_hours_branches = [
-            "MANAGERIAL STAFF",
-            "PERMANENT STAFF WITHOUT OVERTIME"
-        ]
-
         # ======================================
-        # LEAVE HOURS DEDUCTION (Minus Allowed)
+        # ALLOWED HOURS DEDUCTION (Minus Allowed)
+        # Only when no "Deduct From" option is ticked, for a Permanent employee who has
+        # completed more than 3 months since the date of joining on the gate pass date.
         # ======================================
 
-        if employee_branch.upper() in [b.upper() for b in leave_hours_branches]:
+        no_option_ticked = not (
+            doc.get("deduct_from_salary")
+            or doc.get("deduct_from_overtime")
+            or doc.get("deduct_from_duty_hours")
+        )
+
+        if no_option_ticked and has_allowed_hours(employee, doc.date):
 
             current_allowed = float(
                 employee.get("custom_allow_hours_for_leave") or 0
@@ -307,6 +340,9 @@ def on_submit(doc, method=None):
                     "custom_allow_hours_for_leave",
                     remaining
                 )
+
+                # marker so a month-end script never deducts this gate pass a second time
+                doc.add_comment("Info", f"Allowed hours deducted: {decimal_hours} hrs")
 
                 frappe.msgprint(
                     _("✅ Leave Hours Updated<br>"

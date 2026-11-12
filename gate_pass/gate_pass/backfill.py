@@ -168,3 +168,186 @@ def refresh_draft_slips(from_date, to_date, dry_run=1):
     for employee in employees:
         auto_recalculate_draft_slips(employee, from_date, to_date)
     print("done")
+
+
+def give_monthly_hours(hours=8, as_on=None, dry_run=1, branches=None):
+    """Monthly allowed (leave) hours: set `Allow Hours For Leave` on the Employee to `hours` for
+    Active PERMANENT employees who are NOT allowed overtime and have completed more than 3 months
+    since their date of joining. Everyone else is left alone. A negative balance is reset too.
+
+        bench --site <site> execute gate_pass.gate_pass.backfill.give_monthly_hours --kwargs "{'hours': 8, 'dry_run': 1}"
+
+    `branches` (optional list) limits it to those branches, e.g. {'branches': ['MANAGERIAL STAFF', 'PERMANENT STAFF WITHOUT OVERTIME']}.
+    """
+    from frappe.utils import add_months, flt, getdate, nowdate
+
+    dry_run = cint(dry_run)
+    hours = flt(hours)
+    as_on = getdate(as_on or nowdate())
+    cutoff = add_months(as_on, -3)
+
+    filters = {
+        "status": "Active",
+        "employment_type": "Permanent",
+        "custom_allow_overtime": 0,
+        "date_of_joining": ["<", cutoff],
+    }
+    if branches:
+        filters["branch"] = ["in", branches]
+    emps = frappe.get_all(
+        "Employee",
+        filters=filters,
+        fields=["name", "employee_name", "branch", "custom_allow_hours_for_leave"],
+        order_by="branch, name",
+    )
+    value = "%g" % hours
+    print(f"{'DRY RUN' if dry_run else 'LIVE RUN'}: {len(emps)} Active Permanent employees without overtime, joined before {cutoff} -> {value} hrs\n")
+
+    by_branch = {}
+    changed = negative = 0
+    for e in emps:
+        current = flt(e.custom_allow_hours_for_leave)
+        row = by_branch.setdefault(e.branch or "(no branch)", [0, 0])
+        row[0] += 1
+        if (e.custom_allow_hours_for_leave or "") != value:
+            row[1] += 1
+            changed += 1
+            if current < 0:
+                negative += 1
+        if not dry_run:
+            frappe.db.set_value("Employee", e.name, "custom_allow_hours_for_leave", value, update_modified=False)
+
+    print(f"{'Branch':40} {'employees':>9} {'will change':>12}")
+    for branch, (n, c) in by_branch.items():
+        print(f"{branch:40} {n:>9} {c:>12}")
+    print(f"\n{changed} employees change value ({negative} of them have a negative balance that gets reset)")
+    if not dry_run:
+        frappe.db.commit()
+        print("done")
+    else:
+        print("DRY RUN: nothing changed")
+
+
+def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1, only_overtime=1):
+    """One-off: take the hours of the SUBMITTED gate passes in the period off the employee's
+    `Allow Hours For Leave` (what on_submit does for gate passes made after the rule), for
+    PERMANENT employees who are allowed overtime. The same rule as on_submit applies:
+
+      * no "Deduct From" option ticked on the gate pass
+      * more than 3 months since the date of joining on the gate pass date
+      * gate passes already carrying the "Allowed hours deducted" comment are skipped,
+        and every gate pass handled here gets that comment, so running it twice never
+        deducts twice.
+
+    Each handled gate pass also gets its "Remaining Allowed Hours" (running balance).
+
+        bench --site <site> execute gate_pass.gate_pass.backfill.deduct_allowed_hours \\
+            --kwargs "{'from_date': '2026-11-01', 'to_date': '2026-11-12', 'dry_run': 1}"
+
+    Run with dry_run 1 first and check the output, then dry_run 0.
+    `only_overtime` 0 = every Permanent employee, not only those allowed overtime.
+    """
+    from frappe.utils import flt
+
+    from gate_pass.gate_pass.gate_pass_deduction import (
+        DEDUCTION_FIELDS,
+        deducts_allowed_hours,
+        get_decimal_hours,
+    )
+
+    dry_run = cint(dry_run)
+    only_overtime = cint(only_overtime)
+
+    passes = frappe.get_all(
+        "Gate Pass",
+        filters={"docstatus": 1, "date": ["between", [from_date, to_date]]},
+        fields=["name", "employee", "date", "hours", "to_time"] + DEDUCTION_FIELDS,
+        order_by="employee, date, creation",
+    )
+
+    emp_cache = {}
+
+    def employee_info(employee):
+        if employee not in emp_cache:
+            emp_cache[employee] = frappe.db.get_value(
+                "Employee",
+                employee,
+                ["employee_name", "employment_type", "date_of_joining",
+                 "custom_allow_overtime", "custom_allow_hours_for_leave"],
+                as_dict=True,
+            ) or {}
+        return emp_cache[employee]
+
+    picked, skipped = {}, []
+    for p in passes:
+        emp = employee_info(p.employee)
+        hours = get_decimal_hours(p)
+
+        reason = None
+        if not emp:
+            reason = "employee not found"
+        elif (emp.get("employment_type") or "").strip().lower() != "permanent":
+            reason = "not permanent"
+        elif only_overtime and not emp.get("custom_allow_overtime"):
+            reason = "overtime not allowed"
+        elif any(p.get(f) for f in DEDUCTION_FIELDS):
+            reason = "a 'Deduct From' option is ticked"
+        elif not deducts_allowed_hours(p, emp):
+            reason = "3 months of service not completed"
+        elif hours <= 0:
+            reason = "no hours"
+        elif frappe.db.exists(
+            "Comment",
+            {"reference_doctype": "Gate Pass", "reference_name": p.name, "comment_type": "Info",
+             "content": ["like", "Allowed hours deducted%"]},
+        ):
+            reason = "already deducted"
+
+        if reason:
+            # only report the ones the OT / permanent rule is about, not every other employee
+            if emp and (emp.get("employment_type") or "").strip().lower() == "permanent" and (
+                emp.get("custom_allow_overtime") or not only_overtime
+            ):
+                skipped.append((p.name, p.employee, emp.get("employee_name"), p.date, hours, reason))
+            continue
+        picked.setdefault(p.employee, []).append((p, hours))
+
+    print(f"{'DRY RUN' if dry_run else 'LIVE RUN'}: gate passes {from_date} .. {to_date}, "
+          f"{'permanent employees with overtime' if only_overtime else 'all permanent employees'}\n")
+
+    print(f"{'Emp':8} {'Name':28} {'Passes':>6} {'Hours':>7} {'Allowed':>8} {'Remaining':>9}")
+    total_hours = total_passes = 0
+    for employee, rows in picked.items():
+        emp = employee_info(employee)
+        before = flt(emp.get("custom_allow_hours_for_leave"))
+        hours = round(sum(h for _p, h in rows), 2)
+        after = round(before - hours, 2)
+        total_hours += hours
+        total_passes += len(rows)
+        flag = "  <- goes into minus" if after < 0 else ""
+        print(f"{employee:8} {(emp.get('employee_name') or '')[:28]:28} {len(rows):>6} {hours:>7} {before:>8} {after:>9}{flag}")
+
+        if dry_run:
+            continue
+        try:
+            running = before
+            for p, h in rows:
+                running = round(running - h, 2)
+                if frappe.db.has_column("Gate Pass", "remaining_hours"):
+                    frappe.db.set_value("Gate Pass", p.name, "remaining_hours", running, update_modified=False)
+                frappe.get_doc("Gate Pass", p.name).add_comment("Info", f"Allowed hours deducted: {h} hrs")
+            frappe.db.set_value("Employee", employee, "custom_allow_hours_for_leave", after, update_modified=False)
+            frappe.db.commit()
+        except Exception as e:
+            frappe.db.rollback()
+            print(f"   FAILED {employee}: {e}")
+
+    print(f"\n{len(picked)} employees, {total_passes} gate passes, {round(total_hours, 2)} hours "
+          f"{'would be' if dry_run else 'were'} deducted")
+
+    if skipped:
+        print("\nNot deducted:")
+        for name, employee, ename, date, hours, reason in skipped:
+            print(f"  {name:22} {employee:8} {(ename or '')[:24]:24} {date}  {hours:>5} hrs  -> {reason}")
+
+    print("\nDRY RUN: nothing changed" if dry_run else "\ndone")
