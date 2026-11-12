@@ -228,16 +228,23 @@ def give_monthly_hours(hours=8, as_on=None, dry_run=1, branches=None):
         print("DRY RUN: nothing changed")
 
 
-def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1, only_overtime=1):
+OLD_RULE_BRANCHES = ["MANAGERIAL STAFF", "PERMANENT STAFF WITHOUT OVERTIME"]
+
+
+def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1, only_overtime=0,
+                         include_old_branches=0):
     """One-off: take the hours of the SUBMITTED gate passes in the period off the employee's
     `Allow Hours For Leave` (what on_submit does for gate passes made after the rule), for
-    PERMANENT employees who are allowed overtime. The same rule as on_submit applies:
+    every PERMANENT employee. The same rule as on_submit applies:
 
       * no "Deduct From" option ticked on the gate pass
       * more than 3 months since the date of joining on the gate pass date
       * gate passes already carrying the "Allowed hours deducted" comment are skipped,
         and every gate pass handled here gets that comment, so running it twice never
         deducts twice.
+      * employees of the branches the OLD rule already deducted at submit time (MANAGERIAL
+        STAFF, PERMANENT STAFF WITHOUT OVERTIME) are skipped, they carry no comment but their
+        balance is already reduced. `include_old_branches` 1 = do them too.
 
     Each handled gate pass also gets its "Remaining Allowed Hours" (running balance).
 
@@ -245,7 +252,7 @@ def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1
             --kwargs "{'from_date': '2026-11-01', 'to_date': '2026-11-12', 'dry_run': 1}"
 
     Run with dry_run 1 first and check the output, then dry_run 0.
-    `only_overtime` 0 = every Permanent employee, not only those allowed overtime.
+    `only_overtime` 1 = only the Permanent employees who are allowed overtime.
     """
     from frappe.utils import flt
 
@@ -257,6 +264,8 @@ def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1
 
     dry_run = cint(dry_run)
     only_overtime = cint(only_overtime)
+    include_old_branches = cint(include_old_branches)
+    old_branches = [b.upper() for b in OLD_RULE_BRANCHES]
 
     passes = frappe.get_all(
         "Gate Pass",
@@ -272,7 +281,7 @@ def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1
             emp_cache[employee] = frappe.db.get_value(
                 "Employee",
                 employee,
-                ["employee_name", "employment_type", "date_of_joining",
+                ["employee_name", "employment_type", "date_of_joining", "branch",
                  "custom_allow_overtime", "custom_allow_hours_for_leave"],
                 as_dict=True,
             ) or {}
@@ -294,6 +303,8 @@ def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1
             reason = "a 'Deduct From' option is ticked"
         elif not deducts_allowed_hours(p, emp):
             reason = "3 months of service not completed"
+        elif not include_old_branches and (emp.get("branch") or "").strip().upper() in old_branches:
+            reason = "already deducted by the old branch rule"
         elif hours <= 0:
             reason = "no hours"
         elif frappe.db.exists(

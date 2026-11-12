@@ -152,12 +152,42 @@ def calculate_total_hours(doc, method=None):
 
         # Remaining allowed hours after this gate pass (shown below Allowed Hours; it may go
         # negative on purpose, like the "Changing hours into minus" warning on submit)
+        employee = frappe.db.get_value(
+            "Employee", doc.employee, ["employment_type", "date_of_joining"], as_dict=True
+        ) or {}
+        taken = get_decimal_hours(doc) if deducts_allowed_hours(doc, employee) else 0
+        remaining = round(employee_allowed - taken, 2)
+
         if doc.meta.has_field("remaining_hours"):
-            employee = frappe.db.get_value(
-                "Employee", doc.employee, ["employment_type", "date_of_joining"], as_dict=True
-            ) or {}
-            taken = get_decimal_hours(doc) if deducts_allowed_hours(doc, employee) else 0
-            doc.remaining_hours = round(employee_allowed - taken, 2)
+            doc.remaining_hours = remaining
+
+        # Urgent warning when the allowed hours are used up / this gate pass goes into minus.
+        # It only warns: the gate pass can still be saved and submitted.
+        if taken > 0 and remaining < 0:
+            warn_allowed_hours_exhausted(doc, employee_allowed, taken, remaining)
+
+
+def warn_allowed_hours_exhausted(doc, allowed, taken, remaining):
+    if allowed <= 0:
+        lead = _("{0} has NO allowed hours left.").format(doc.get("employee_name") or doc.employee)
+    else:
+        lead = _("{0} has only {1} allowed hours left.").format(
+            doc.get("employee_name") or doc.employee, allowed
+        )
+    frappe.msgprint(
+        _("{0}<br><br>Allowed: <b>{1} hrs</b><br>This gate pass: <b>{2} hrs</b><br>"
+          "Remaining after this: <b style='color:red'>{3} hrs</b> (minus)<br><br>"
+          "You can still continue, but these hours will go into minus.").format(
+            lead, allowed, taken, remaining
+        ),
+        title=_("⚠️ URGENT: Allowed Hours Finished"),
+        indicator="red",
+    )
+    frappe.msgprint(
+        _("Allowed hours finished: {0} hrs in minus").format(remaining),
+        indicator="red",
+        alert=True,
+    )
 
 
 SALARY_COMPONENT = "G.P"   # existing Deduction component (abbr D-GP) used for gate pass deductions
