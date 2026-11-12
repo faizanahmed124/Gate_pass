@@ -448,3 +448,142 @@ def on_submit(doc, method=None):
         frappe.throw(
             _("Error processing submission. Contact Administrator.")
         )
+
+# ═══════════════════════════════════════════════════════════════
+#  LESS DUTY HOURS (LDH) COVER
+#
+#  A short leave (gate pass) excuses the time the employee was away. When the Attendance of that
+#  day carries Less Duty Hours (e.g. came 3 hours late), the gate pass hours are taken off the
+#  Attendance LDH (never below 0), the same way they are taken off the allowed hours.
+#  The salary slip is not touched: it picks the LDH up from the Attendance at month end.
+#
+#  Only the gate passes that use the allowed hours count (no "Deduct From" option ticked,
+#  Permanent employee with more than 3 months of service). Each gate pass remembers how much LDH
+#  it covered in `ldh_reduced`, so the figure is always worked out from the same starting point
+#  (LDH now + what the gate passes covered) and running it again never cuts twice.
+# ═══════════════════════════════════════════════════════════════
+
+def _has_ldh_field():
+    return frappe.get_meta("Gate Pass").has_field("ldh_reduced")
+
+
+def _ldh_gate_passes(employee, date):
+    """Submitted gate passes of the day that use the allowed hours (they also cover LDH)."""
+    employee_row = frappe.db.get_value(
+        "Employee", employee, ["employment_type", "date_of_joining"], as_dict=True
+    ) or {}
+    rows = frappe.get_all(
+        "Gate Pass",
+        filters={"employee": employee, "date": date, "docstatus": 1},
+        fields=["name", "date", "hours", "to_time", "ldh_reduced"] + DEDUCTION_FIELDS,
+        order_by="creation",
+    )
+    return [r for r in rows if deducts_allowed_hours(r, employee_row)]
+
+
+def plan_day_ldh(employee, date):
+    """What the Attendance LDH of the day should be after the gate passes. Writes nothing.
+    Returns None when there is no submitted attendance or no gate pass that covers LDH."""
+    attendance = frappe.db.get_value(
+        "Attendance",
+        {"employee": employee, "attendance_date": date, "docstatus": 1},
+        ["name", "custom_less_duty_hour"],
+        as_dict=True,
+    )
+    passes = _ldh_gate_passes(employee, date)
+    if not attendance or not passes:
+        return None
+
+    now = flt(attendance.custom_less_duty_hour)
+    raw = round(now + sum(flt(p.ldh_reduced) for p in passes), 2)   # LDH before any gate pass
+
+    remaining, cuts = raw, []
+    for p in passes:
+        cut = round(min(remaining, get_decimal_hours(p)), 2)
+        remaining = round(remaining - cut, 2)
+        cuts.append((p.name, cut))
+    return {"attendance": attendance.name, "now": now, "raw": raw, "new": remaining, "cuts": cuts}
+
+
+def sync_day_ldh(employee, date):
+    """Put the Attendance LDH of the day to plan_day_ldh()'s value and record what every gate
+    pass covered. Safe to call any number of times."""
+    if not _has_ldh_field():
+        return None
+    plan = plan_day_ldh(employee, date)
+    if not plan:
+        return None
+    for name, cut in plan["cuts"]:
+        frappe.db.set_value("Gate Pass", name, "ldh_reduced", cut, update_modified=False)
+    if abs(plan["new"] - plan["now"]) > 0.001:
+        frappe.db.set_value(
+            "Attendance", plan["attendance"], "custom_less_duty_hour", plan["new"], update_modified=False
+        )
+    return plan
+
+
+def reduce_less_duty_hours(doc, method=None):
+    """Gate Pass on_submit: cover the LDH of that day's attendance."""
+    try:
+        if not (doc.get("employee") and doc.get("date")):
+            return
+        plan = sync_day_ldh(doc.employee, doc.date)
+        if plan and plan["new"] < plan["now"]:
+            covered = round(plan["now"] - plan["new"], 2)
+            doc.add_comment("Info", f"LDH reduced: {covered} hrs")
+            frappe.msgprint(
+                _("Less Duty Hours on the attendance of {0} reduced by {1} hrs ({2} -> {3})").format(
+                    formatdate(doc.date), covered, plan["now"], plan["new"]
+                ),
+                indicator="blue",
+                alert=True,
+            )
+    except Exception:
+        # never block a gate pass because of the LDH cover
+        frappe.log_error(frappe.get_traceback(), "Gate Pass LDH reduce error")
+
+
+def restore_less_duty_hours(doc, method=None):
+    """Gate Pass on_cancel: give back the LDH it covered, then re-cover with the remaining gate passes."""
+    try:
+        if not (doc.get("employee") and doc.get("date") and _has_ldh_field()):
+            return
+        cut = flt(doc.get("ldh_reduced"))
+        if cut <= 0:
+            return
+        attendance = frappe.db.get_value(
+            "Attendance",
+            {"employee": doc.employee, "attendance_date": doc.date, "docstatus": 1},
+            ["name", "custom_less_duty_hour"],
+            as_dict=True,
+        )
+        if attendance:
+            frappe.db.set_value(
+                "Attendance", attendance.name, "custom_less_duty_hour",
+                round(flt(attendance.custom_less_duty_hour) + cut, 2), update_modified=False,
+            )
+        doc.db_set("ldh_reduced", 0, update_modified=False)
+        doc.add_comment("Info", f"LDH restored: {cut} hrs")
+        sync_day_ldh(doc.employee, doc.date)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Gate Pass LDH restore error")
+
+
+def apply_gate_pass_to_attendance(doc, method=None):
+    """Attendance on_submit: the LDH was just worked out again from the working hours, so the
+    gate passes of the day start from scratch. Done after the commit, so the other Attendance
+    hooks (which set the LDH) have finished whatever the app order is."""
+    try:
+        if not (doc.get("employee") and doc.get("attendance_date") and _has_ldh_field()):
+            return
+        for p in _ldh_gate_passes(doc.employee, doc.attendance_date):
+            frappe.db.set_value("Gate Pass", p.name, "ldh_reduced", 0, update_modified=False)
+        frappe.enqueue(
+            "gate_pass.gate_pass.gate_pass_deduction.sync_day_ldh",
+            queue="short",
+            enqueue_after_commit=True,
+            employee=doc.employee,
+            date=str(doc.attendance_date),
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Gate Pass LDH attendance hook error")

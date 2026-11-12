@@ -480,3 +480,67 @@ def recompute_monthly_hours(month_start="2026-11-01", to_date="2026-11-12", mont
             print(f"  {name:22} {employee:8} {(ename or '')[:24]:24} {date}  {hours} hrs")
 
     print("\nDRY RUN: nothing changed" if dry_run else "\ndone")
+
+
+def reduce_ldh(from_date="2026-11-01", to_date="2026-11-12", dry_run=1):
+    """One-off: for gate passes made before the LDH cover existed, take the gate pass hours off
+    the Less Duty Hours (LDH) of the same day's Attendance (never below 0). The salary slip is
+    not touched, it reads the LDH from the Attendance at month end.
+
+    Same gate passes as the allowed hours: submitted, no "Deduct From" option ticked, Permanent
+    employee with more than 3 months of service. Each gate pass records what it covered
+    (`LDH Covered`), so running this again changes nothing.
+
+        bench --site <site> execute gate_pass.gate_pass.backfill.reduce_ldh \\
+            --kwargs "{'from_date': '2026-11-01', 'to_date': '2026-11-12', 'dry_run': 1}"
+
+    Run with dry_run 1 first and check the output, then dry_run 0.
+    """
+    from gate_pass.gate_pass.gate_pass_deduction import (
+        _has_ldh_field,
+        plan_day_ldh,
+        sync_day_ldh,
+    )
+
+    dry_run = cint(dry_run)
+    if not _has_ldh_field():
+        print("Gate Pass has no 'ldh_reduced' field yet: run `bench --site <site> migrate` first")
+        return
+
+    days = frappe.db.sql(
+        """select distinct employee, date from `tabGate Pass`
+        where docstatus = 1 and date between %s and %s order by employee, date""",
+        (from_date, to_date),
+    )
+
+    print(f"{'DRY RUN' if dry_run else 'LIVE RUN'}: gate passes {from_date} .. {to_date}\n")
+    print(f"{'Emp':8} {'Name':26} {'Date':11} {'GP hrs':>6} {'LDH now':>8} {'LDH new':>8}")
+
+    changed = no_attendance = no_ldh = 0
+    for employee, date in days:
+        plan = plan_day_ldh(employee, date)
+        if not plan:
+            # no covering gate pass (other option / not permanent / <3 months) or no attendance
+            continue
+        if plan["raw"] <= 0:
+            no_ldh += 1
+            continue
+        if abs(plan["new"] - plan["now"]) < 0.001:
+            continue
+
+        changed += 1
+        name = frappe.db.get_value("Employee", employee, "employee_name") or ""
+        hours = round(sum(c for _n, c in plan["cuts"]), 2)
+        print(f"{employee:8} {name[:26]:26} {str(date):11} {hours:>6} {plan['now']:>8g} {plan['new']:>8g}")
+
+        if not dry_run:
+            try:
+                sync_day_ldh(employee, date)
+                frappe.db.commit()
+            except Exception as e:
+                frappe.db.rollback()
+                print(f"   FAILED {employee} {date}: {e}")
+
+    print(f"\n{changed} attendance days {'would change' if dry_run else 'changed'}; "
+          f"{no_ldh} days had a covering gate pass but no LDH on the attendance")
+    print("\nDRY RUN: nothing changed" if dry_run else "\ndone")

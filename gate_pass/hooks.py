@@ -23,9 +23,16 @@ doc_events = {
         "on_submit": [
             "gate_pass.gate_pass.gate_pass_deduction.on_submit",
             "gate_pass.gate_pass.gate_pass_deduction.sync_additional_salary",
+            "gate_pass.gate_pass.gate_pass_deduction.reduce_less_duty_hours",
         ],
-        "on_cancel": "gate_pass.gate_pass.gate_pass_deduction.sync_additional_salary",
-    }
+        "on_cancel": [
+            "gate_pass.gate_pass.gate_pass_deduction.sync_additional_salary",
+            "gate_pass.gate_pass.gate_pass_deduction.restore_less_duty_hours",
+        ],
+    },
+    "Attendance": {
+        "on_submit": "gate_pass.gate_pass.gate_pass_deduction.apply_gate_pass_to_attendance",
+    },
 }
 
 # # Option 2: Try without the first gate_pass
