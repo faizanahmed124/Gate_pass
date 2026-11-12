@@ -231,11 +231,13 @@ def give_monthly_hours(hours=8, as_on=None, dry_run=1, branches=None):
 OLD_RULE_BRANCHES = ["MANAGERIAL STAFF", "PERMANENT STAFF WITHOUT OVERTIME"]
 
 
-def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1, only_overtime=0,
+def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1, only_overtime=1,
                          include_old_branches=0):
     """One-off: take the hours of the SUBMITTED gate passes in the period off the employee's
-    `Allow Hours For Leave` (what on_submit does for gate passes made after the rule), for
-    every PERMANENT employee. The same rule as on_submit applies:
+    `Allow Hours For Leave` (what on_submit does for gate passes made after the rule), for the
+    PERMANENT employees who are allowed overtime. (Permanent employees WITHOUT overtime have a
+    monthly allowance that gets reset: use recompute_monthly_hours for them.)
+    The same rule as on_submit applies:
 
       * no "Deduct From" option ticked on the gate pass
       * more than 3 months since the date of joining on the gate pass date
@@ -360,5 +362,121 @@ def deduct_allowed_hours(from_date="2026-11-01", to_date="2026-11-12", dry_run=1
         print("\nNot deducted:")
         for name, employee, ename, date, hours, reason in skipped:
             print(f"  {name:22} {employee:8} {(ename or '')[:24]:24} {date}  {hours:>5} hrs  -> {reason}")
+
+    print("\nDRY RUN: nothing changed" if dry_run else "\ndone")
+
+
+def recompute_monthly_hours(month_start="2026-11-01", to_date="2026-11-12", monthly_hours=8, dry_run=1):
+    """Monthly allowance for the Permanent employees WITHOUT overtime (the ones
+    `give_monthly_hours` gives the monthly hours to):
+
+        Allow Hours For Leave = monthly_hours - hours of all the month's gate passes
+
+    It is an ABSOLUTE recompute, so it is safe to run again and again (the monthly reset to 8
+    wipes what the gate passes took before it, this puts it back). Counted gate passes: submitted,
+    dated month_start .. to_date, no "Deduct From" option ticked, more than 3 months of service on
+    the gate pass date. Handled gate passes get their "Remaining Allowed Hours" (running balance)
+    and the "Allowed hours deducted" comment, so deduct_allowed_hours never takes them again.
+
+    Employees allowed overtime are not touched (they have no monthly allowance); use
+    deduct_allowed_hours for them.
+
+        bench --site <site> execute gate_pass.gate_pass.backfill.recompute_monthly_hours \\
+            --kwargs "{'month_start': '2026-11-01', 'to_date': '2026-11-12', 'dry_run': 1}"
+
+    Run with dry_run 1 first and check the output, then dry_run 0.
+    """
+    from frappe.utils import flt
+
+    from gate_pass.gate_pass.gate_pass_deduction import (
+        DEDUCTION_FIELDS,
+        deducts_allowed_hours,
+        get_decimal_hours,
+    )
+
+    dry_run = cint(dry_run)
+    monthly_hours = flt(monthly_hours)
+
+    passes = frappe.get_all(
+        "Gate Pass",
+        filters={"docstatus": 1, "date": ["between", [month_start, to_date]]},
+        fields=["name", "employee", "date", "hours", "to_time"] + DEDUCTION_FIELDS,
+        order_by="employee, date, creation",
+    )
+
+    emp_cache = {}
+
+    def employee_info(employee):
+        if employee not in emp_cache:
+            emp_cache[employee] = frappe.db.get_value(
+                "Employee",
+                employee,
+                ["employee_name", "employment_type", "date_of_joining", "branch",
+                 "custom_allow_overtime", "custom_allow_hours_for_leave"],
+                as_dict=True,
+            ) or {}
+        return emp_cache[employee]
+
+    counted, long_passes = {}, []
+    for p in passes:
+        emp = employee_info(p.employee)
+        if not emp or (emp.get("employment_type") or "").strip().lower() != "permanent":
+            continue
+        if emp.get("custom_allow_overtime"):
+            continue
+        if any(p.get(f) for f in DEDUCTION_FIELDS) or not deducts_allowed_hours(p, emp):
+            continue
+        hours = get_decimal_hours(p)
+        if hours <= 0:
+            continue
+        counted.setdefault(p.employee, []).append((p, hours))
+        if hours > 8:
+            long_passes.append((p.name, p.employee, emp.get("employee_name"), p.date, hours))
+
+    print(f"{'DRY RUN' if dry_run else 'LIVE RUN'}: balance = {monthly_hours:g} - gate pass hours "
+          f"{month_start} .. {to_date}, Permanent employees without overtime\n")
+    print(f"{'Emp':8} {'Name':26} {'Branch':32} {'Passes':>6} {'Used':>6} {'Now':>7} {'New':>7}")
+
+    changed = minus = 0
+    for employee, rows in counted.items():
+        emp = employee_info(employee)
+        used = round(sum(h for _p, h in rows), 2)
+        now = flt(emp.get("custom_allow_hours_for_leave"))
+        new = round(monthly_hours - used, 2)
+        if abs(now - new) > 0.001:
+            changed += 1
+        if new < 0:
+            minus += 1
+        flag = "  <- minus" if new < 0 else ""
+        same = "" if abs(now - new) > 0.001 else "  (same)"
+        print(f"{employee:8} {(emp.get('employee_name') or '')[:26]:26} {(emp.get('branch') or '')[:32]:32} "
+              f"{len(rows):>6} {used:>6} {now:>7g} {new:>7g}{flag}{same}")
+
+        if dry_run:
+            continue
+        try:
+            running = monthly_hours
+            for p, h in rows:
+                running = round(running - h, 2)
+                if frappe.db.has_column("Gate Pass", "remaining_hours"):
+                    frappe.db.set_value("Gate Pass", p.name, "remaining_hours", running, update_modified=False)
+                if not frappe.db.exists(
+                    "Comment",
+                    {"reference_doctype": "Gate Pass", "reference_name": p.name, "comment_type": "Info",
+                     "content": ["like", "Allowed hours deducted%"]},
+                ):
+                    frappe.get_doc("Gate Pass", p.name).add_comment("Info", f"Allowed hours deducted: {h} hrs")
+            frappe.db.set_value("Employee", employee, "custom_allow_hours_for_leave", new, update_modified=False)
+            frappe.db.commit()
+        except Exception as e:
+            frappe.db.rollback()
+            print(f"   FAILED {employee}: {e}")
+
+    print(f"\n{len(counted)} employees, {changed} change value, {minus} go into minus")
+
+    if long_passes:
+        print("\nCheck these gate passes (more than 8 hours, maybe a wrong From/To time):")
+        for name, employee, ename, date, hours in long_passes:
+            print(f"  {name:22} {employee:8} {(ename or '')[:24]:24} {date}  {hours} hrs")
 
     print("\nDRY RUN: nothing changed" if dry_run else "\ndone")
